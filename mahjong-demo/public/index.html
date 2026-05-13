@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Mahjong Ways Demo</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <main class="app">
+    <section class="hero">
+      <div>
+        <p class="eyebrow">Node.js Logic Demo</p>
+        <h1>Đường Mạt Chược 1 — Spin Simulator</h1>
+        <p class="desc">Demo mô phỏng RNG, board 5x4, payout, cascade và multiplier trước khi port sang Java.</p>
+      </div>
+      <div class="panel controls">
+        <label>Bet Amount</label>
+        <input id="betAmount" type="number" min="1" value="1000" />
+        <button id="spinBtn">SPIN</button>
+      </div>
+    </section>
+
+    <section class="stats">
+      <div class="stat"><span>Total Win</span><strong id="totalWin">0</strong></div>
+      <div class="stat"><span>Scatter</span><strong id="scatterCount">0</strong></div>
+      <div class="stat"><span>Free Spin</span><strong id="freeSpin">No</strong></div>
+      <div class="stat"><span>Cascade Steps</span><strong id="stepCount">0</strong></div>
+    </section>
+
+    <section class="panel">
+      <div class="section-title">
+        <h2>Board hiện tại</h2>
+        <p id="spinId">Chưa spin</p>
+      </div>
+      <div id="board" class="board"></div>
+    </section>
+
+    <section class="panel">
+      <div class="section-title">
+        <h2>Cascade Timeline</h2>
+        <p>Click từng step để xem board, win cells và multiplier</p>
+      </div>
+      <div id="timeline" class="timeline"></div>
+    </section>
+
+    <section class="panel">
+      <div class="section-title">
+        <h2>JSON kết quả</h2>
+        <p>Dùng để debug logic backend</p>
+      </div>
+      <pre id="jsonResult">{}</pre>
+    </section>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>

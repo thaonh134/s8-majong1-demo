@@ -1,0 +1,14 @@
+{
+  "name": "mahjong-ways-demo",
+  "version": "1.0.0",
+  "description": "Demo mô phỏng slot kiểu Mahjong Ways bằng Node.js + HTML",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.18.3",
+    "cors": "^2.8.5"
+  }
+}
