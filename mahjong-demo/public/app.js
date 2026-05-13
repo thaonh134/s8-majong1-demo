@@ -1,6 +1,9 @@
 let config = null;
 let lastResult = null;
 let activeStepIndex = 0;
+let sessionTotalBet = 0;
+let sessionTotalWin = 0;
+let sessionTotalLoss = 0;
 
 const boardEl = document.getElementById('board');
 const timelineEl = document.getElementById('timeline');
@@ -47,6 +50,21 @@ function renderResult(result) {
 
   renderTimeline(result.steps);
   renderStep(0);
+  updateSessionStats(result);
+}
+
+function updateSessionStats(result) {
+  const betAmount = Number(result.betAmount || 0);
+  const winAmount = Number(result.totalWin || 0);
+
+  sessionTotalBet += betAmount;
+  sessionTotalWin += winAmount;
+  sessionTotalLoss += Math.max(betAmount - winAmount, 0);
+  const rtnPercent = sessionTotalBet > 0 ? (sessionTotalWin / sessionTotalBet) * 100 : 0;
+
+  document.getElementById('sessionTotalWin').textContent = formatMoney(sessionTotalWin);
+  document.getElementById('sessionTotalLoss').textContent = formatMoney(sessionTotalLoss);
+  document.getElementById('sessionRtnPercent').textContent = `${rtnPercent.toFixed(2)}%`;
 }
 
 function renderTimeline(steps) {
