@@ -27,7 +27,15 @@ function renderBoard(board, highlightKeys = new Set()) {
     row.forEach((cell, c) => {
       const div = document.createElement('div');
       div.className = `tile tile-${cell || 'empty'} ${highlightKeys.has(`${r},${c}`) ? 'winCell' : ''}`;
-      div.textContent = cell ? symbolMap[cell] || cell : '';
+      if (cell) {
+        const icon = symbolMap[cell] || cell;
+        div.innerHTML = `
+          <span class="tileCode">${cell}</span>
+          <span class="tileIcon">${icon}</span>
+        `;
+      } else {
+        div.textContent = '';
+      }
       target.appendChild(div);
     });
   });
