@@ -24,6 +24,30 @@ Mở trình duyệt: [http://localhost:3000](http://localhost:3000)
 - Cascade
 - Multiplier tăng sau mỗi cascade
 - JSON debug đầy đủ
+- Deterministic seed + replay
+- Wallet giả lập in-memory
+- Audit log in-memory
+- Tool simulation RTP
+- Math config tách riêng (RTP target, reel weight base/free)
+- Free spin thật (state theo player)
+
+## API mới (production-like)
+
+- `POST /api/spin`: hỗ trợ `seed`, `nonce` để deterministic/replay.
+- `POST /api/replay`: nhận `spinId`, trả replay result và `deterministicMatch`.
+- `GET /api/wallet/:playerId`: xem wallet mock.
+- `POST /api/wallet/deposit`: nạp thêm số dư mock.
+- `GET /api/audit?limit=100`: lấy audit log gần nhất.
+- `POST /api/simulate`: chạy simulation RTP nhanh qua API.
+
+## Simulation CLI
+
+```bash
+cd mahjong-demo
+npm run simulate -- 50000 1000 seed-v1
+```
+
+Output gồm tổng bet/win, RTP, số free spin đã dùng, start/end balance.
 
 ---
 

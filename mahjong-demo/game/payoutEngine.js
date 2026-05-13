@@ -1,65 +1,60 @@
-const { PAY_SYMBOL_CODES, getSymbol } = require('./symbols');
+const { ROWS, COLS, PAYTABLE, ENGINE_LIMITS } = require('./config');
+const NORMAL_SYMBOLS = Object.keys(PAYTABLE);
 
-class PayoutEngine {
-  evaluate(board, betAmount, multiplier = 1) {
-    const rows = board.length;
-    const cols = board[0].length;
-    const wins = [];
-    const winCells = new Set();
-    let totalWin = 0;
-
-    for (const symbolCode of PAY_SYMBOL_CODES) {
-      const matchedByColumn = [];
-
-      for (let c = 0; c < cols; c++) {
-        const cells = [];
-        for (let r = 0; r < rows; r++) {
-          const cell = board[r][c];
-          if (cell === symbolCode || cell === 'WILD') {
-            cells.push({ row: r, col: c });
-          }
-        }
-
-        if (cells.length === 0) break;
-        matchedByColumn.push(cells);
-      }
-
-      const matchCols = matchedByColumn.length;
-      if (matchCols >= 3) {
-        const ways = matchedByColumn.reduce((product, cells) => product * cells.length, 1);
-        const payRate = getSymbol(symbolCode).pays[Math.min(matchCols, 5)] || 0;
-        const rawWin = betAmount * payRate * ways;
-        const winAmount = rawWin * multiplier;
-
-        matchedByColumn.flat().forEach(cell => winCells.add(`${cell.row}:${cell.col}`));
-
-        wins.push({
-          symbol: symbolCode,
-          symbolLabel: getSymbol(symbolCode).label,
-          matchColumns: matchCols,
-          ways,
-          payRate,
-          multiplier,
-          winAmount
-        });
-
-        totalWin += winAmount;
-      }
-    }
-
-    return {
-      wins,
-      winCells: Array.from(winCells).map(key => {
-        const [row, col] = key.split(':').map(Number);
-        return { row, col };
-      }),
-      totalWin
-    };
-  }
-
-  countScatter(board) {
-    return board.flat().filter(code => code === 'SCATTER').length;
-  }
+function cellMatches(target, cell) {
+  return cell === target || cell === 'W';
 }
 
-module.exports = PayoutEngine;
+function checkWins(board, betAmount) {
+  const wins = [];
+
+  for (const symbol of NORMAL_SYMBOLS) {
+    const matchedCells = [];
+    const countsByCol = [];
+    let consecutiveCols = 0;
+    let ways = 1;
+
+    for (let c = 0; c < COLS; c++) {
+      const colCells = [];
+      for (let r = 0; r < ROWS; r++) {
+        if (cellMatches(symbol, board[r][c])) {
+          colCells.push({ row: r, col: c, symbol: board[r][c] });
+        }
+      }
+
+      if (colCells.length === 0) break;
+      consecutiveCols += 1;
+      countsByCol.push(colCells.length);
+      matchedCells.push(...colCells);
+      ways *= colCells.length;
+    }
+
+    if (consecutiveCols >= 3) {
+      const payMultiplier = PAYTABLE[symbol][consecutiveCols] || 0;
+      const winAmount = Math.floor(betAmount * payMultiplier * ways);
+      wins.push({
+        symbol,
+        matchCount: consecutiveCols,
+        ways,
+        countsByCol,
+        payMultiplier,
+        baseWin: winAmount,
+        cells: matchedCells
+      });
+    }
+  }
+
+  return wins;
+}
+
+function calculateStepWin(wins, multiplier) {
+  const baseWin = wins.reduce((sum, w) => sum + w.baseWin, 0);
+  return Math.min(baseWin * multiplier, Number.MAX_SAFE_INTEGER);
+}
+
+function capTotalWin(totalWin, betAmount) {
+  const cap = betAmount * ENGINE_LIMITS.maxWinMultiplier;
+  return Math.min(totalWin, cap);
+}
+
+module.exports = { checkWins, calculateStepWin, capTotalWin };

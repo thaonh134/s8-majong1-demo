@@ -1,34 +1,84 @@
 const express = require('express');
-const cors = require('cors');
 const path = require('path');
-const spinEngine = require('./game/spinEngine');
-const { SYMBOLS } = require('./game/symbols');
+const { spin } = require('./game/spinEngine');
+const { simulate } = require('./game/simulator');
+const wallet = require('./game/wallet');
+const { readLatest } = require('./game/auditLog');
+const config = require('./game/config');
+const sessionStats = require('./game/sessionStats');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: '1mb' }));
 app.use(express.static(path.join(__dirname, 'public')));
 
 app.get('/api/config', (req, res) => {
-  res.json({ symbols: SYMBOLS, rows: 4, cols: 5 });
+  res.json(config);
+});
+
+app.get('/api/wallet/:playerId', (req, res) => {
+  res.json({ playerId: req.params.playerId, balance: wallet.getBalance(req.params.playerId) });
+});
+
+app.post('/api/wallet/reset', (req, res) => {
+  const playerId = req.body.playerId || 'demo-player';
+  const balance = wallet.reset(playerId, Number(req.body.balance || 1000000));
+  const session = sessionStats.reset(playerId);
+  res.json({ playerId, balance, session });
+});
+
+app.get('/api/stats/:playerId', (req, res) => {
+  res.json({ playerId: req.params.playerId, ...sessionStats.get(req.params.playerId) });
 });
 
 app.post('/api/spin', (req, res) => {
-  const betAmount = Number(req.body.betAmount || 1000);
-  if (!Number.isFinite(betAmount) || betAmount <= 0) {
-    return res.status(400).json({ error: 'betAmount không hợp lệ' });
+  try {
+    const result = spin({
+      playerId: req.body.playerId || 'demo-player',
+      betAmount: req.body.betAmount || 1000,
+      seed: req.body.seed || undefined,
+      useWallet: req.body.useWallet !== false,
+      buyFeature: req.body.buyFeature === true
+    });
+    res.json(result);
+  } catch (err) {
+    res.status(400).json({ error: err.message });
   }
+});
 
-  const result = spinEngine.spin({
-    playerId: req.body.playerId || 'demo-player',
-    betAmount
-  });
+app.post('/api/buy-feature', (req, res) => {
+  try {
+    const result = spin({
+      playerId: req.body.playerId || 'demo-player',
+      betAmount: req.body.betAmount || 1000,
+      seed: req.body.seed || undefined,
+      useWallet: req.body.useWallet !== false,
+      buyFeature: true
+    });
+    res.json(result);
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
 
-  res.json(result);
+app.post('/api/simulate', (req, res) => {
+  try {
+    const result = simulate({
+      rounds: req.body.rounds || 10000,
+      betAmount: req.body.betAmount || 1000,
+      seedPrefix: req.body.seedPrefix || 'sim'
+    });
+    res.json(result);
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.get('/api/audit/latest', (req, res) => {
+  res.json(readLatest(Number(req.query.limit || 20)));
 });
 
 app.listen(PORT, () => {
-  console.log(`Mahjong demo running at http://localhost:${PORT}`);
+  console.log(`Mahjong demo v3 running at http://localhost:${PORT}`);
 });

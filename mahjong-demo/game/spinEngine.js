@@ -1,75 +1,164 @@
-const Rng = require('./rng');
-const BoardGenerator = require('./boardGenerator');
-const PayoutEngine = require('./payoutEngine');
-const CascadeEngine = require('./cascadeEngine');
+const crypto = require('crypto');
+const { RngEngine, createSeed } = require('./rng');
+const { generateBoard, countSymbol } = require('./boardGenerator');
+const { checkWins, calculateStepWin, capTotalWin } = require('./payoutEngine');
+const { cascade } = require('./cascadeEngine');
+const { appendAudit } = require('./auditLog');
+const wallet = require('./wallet');
+const sessionStats = require('./sessionStats');
+const {
+  BASE_MULTIPLIERS,
+  FREE_SPIN_MULTIPLIERS,
+  FREE_SPIN_RULES,
+  ENGINE_LIMITS
+} = require('./config');
 
-class SpinEngine {
-  constructor() {
-    this.rng = new Rng();
-    this.boardGenerator = new BoardGenerator(this.rng);
-    this.payoutEngine = new PayoutEngine();
-    this.cascadeEngine = new CascadeEngine(this.boardGenerator);
+function multiplierAt(index, mode) {
+  const table = mode === 'freeSpin' ? FREE_SPIN_MULTIPLIERS : BASE_MULTIPLIERS;
+  return table[Math.min(index, table.length - 1)];
+}
+
+function playOneBoard({ rng, betAmount, mode, spinIndex = 0 }) {
+  let board = generateBoard(rng, mode);
+  const initialBoard = board.map(row => [...row]);
+  const steps = [];
+  let totalWin = 0;
+  let cascadeIndex = 0;
+
+  while (cascadeIndex < ENGINE_LIMITS.maxCascadeSteps) {
+    const wins = checkWins(board, betAmount);
+    if (wins.length === 0) break;
+
+    const multiplier = multiplierAt(cascadeIndex, mode);
+    const stepWin = calculateStepWin(wins, multiplier);
+    totalWin += stepWin;
+
+    const { removedBoard, nextBoard } = cascade(board, wins, rng, mode);
+
+    steps.push({
+      spinIndex,
+      cascadeIndex,
+      mode,
+      boardBefore: board,
+      wins,
+      multiplier,
+      stepWin,
+      removedBoard,
+      boardAfter: nextBoard
+    });
+
+    board = nextBoard;
+    cascadeIndex += 1;
   }
 
-  spin({ playerId = 'demo-player', betAmount = 1000 }) {
-    const spinId = `SPIN-${this.rng.uuid()}`;
-    let board = this.boardGenerator.generate(4, 5);
-    const initialBoard = cloneBoard(board);
-    const steps = [];
-    let totalWin = 0;
-    let multiplier = 1;
-    const maxCascade = 20;
+  return {
+    mode,
+    spinIndex,
+    initialBoard,
+    finalBoard: board,
+    scatterCount: countSymbol(initialBoard, 'S'),
+    totalWin,
+    steps
+  };
+}
 
-    const scatterCount = this.payoutEngine.countScatter(board);
-    const freeSpinTriggered = scatterCount >= 3;
+function spin({ playerId = 'demo-player', betAmount = 1000, seed, useWallet = true, buyFeature = false } = {}) {
+  betAmount = Math.floor(Number(betAmount));
+  if (!Number.isFinite(betAmount) || betAmount <= 0) throw new Error('Invalid betAmount');
 
-    for (let index = 0; index < maxCascade; index++) {
-      const evaluation = this.payoutEngine.evaluate(board, betAmount, multiplier);
+  const spinId = `SPIN-${crypto.randomUUID()}`;
+  const finalSeed = seed || createSeed(spinId);
+  const rng = new RngEngine(finalSeed);
 
-      steps.push({
-        index,
-        board: cloneBoard(board),
-        wins: evaluation.wins,
-        winCells: evaluation.winCells,
-        winAmount: roundMoney(evaluation.totalWin),
-        multiplier
-      });
+  const featureCost = buyFeature ? betAmount * FREE_SPIN_RULES.buyFeatureCostMultiplier : betAmount;
+  const balanceBefore = wallet.getBalance(playerId);
+  if (useWallet) wallet.debit(playerId, featureCost);
 
-      if (evaluation.wins.length === 0) break;
+  let base;
+  let totalWin = 0;
+  let freeSpinTriggered = false;
+  let remainingFreeSpins = 0;
 
-      totalWin += evaluation.totalWin;
-      const cascaded = this.cascadeEngine.apply(board, evaluation.winCells);
-      board = cascaded.board;
-      multiplier += 1;
-
-      steps[steps.length - 1].newCellsAfterCascade = cascaded.newCells;
-    }
-
-    if (freeSpinTriggered) {
-      // Demo rule: scatter >= 3 tặng bonus nhỏ. Bản sau có thể làm free spin thật.
-      totalWin += betAmount * 2;
-    }
-
-    return {
-      spinId,
-      playerId,
-      betAmount,
-      totalWin: roundMoney(totalWin),
-      initialBoard,
-      finalBoard: cloneBoard(board),
-      scatterCount,
-      freeSpinTriggered,
-      steps
+  if (buyFeature) {
+    base = {
+      mode: 'base',
+      spinIndex: 0,
+      initialBoard: [],
+      finalBoard: [],
+      scatterCount: FREE_SPIN_RULES.triggerScatterCount,
+      totalWin: 0,
+      steps: [],
+      skippedByBuyFeature: true
     };
+    freeSpinTriggered = true;
+    remainingFreeSpins = FREE_SPIN_RULES.awardSpins;
+  } else {
+    base = playOneBoard({ rng, betAmount, mode: 'base', spinIndex: 0 });
+    totalWin = base.totalWin;
+    freeSpinTriggered = base.scatterCount >= FREE_SPIN_RULES.triggerScatterCount;
+    remainingFreeSpins = freeSpinTriggered ? FREE_SPIN_RULES.awardSpins : 0;
   }
+
+  const freeSpins = [];
+  let freeSpinIndex = 0;
+
+  while (remainingFreeSpins > 0 && freeSpinIndex < FREE_SPIN_RULES.maxSpins) {
+    remainingFreeSpins -= 1;
+    freeSpinIndex += 1;
+    const fsResult = playOneBoard({ rng, betAmount, mode: 'freeSpin', spinIndex: freeSpinIndex });
+    totalWin += fsResult.totalWin;
+
+    if (fsResult.scatterCount >= FREE_SPIN_RULES.triggerScatterCount) {
+      remainingFreeSpins += FREE_SPIN_RULES.retriggerSpins;
+    }
+
+    freeSpins.push({ ...fsResult, remainingFreeSpinsAfter: remainingFreeSpins });
+  }
+
+  const cappedTotalWin = capTotalWin(totalWin, betAmount);
+  const wasCapped = cappedTotalWin !== totalWin;
+  if (useWallet) wallet.credit(playerId, cappedTotalWin);
+  const balanceAfter = wallet.getBalance(playerId);
+
+  const allSteps = base.steps.length + freeSpins.reduce((sum, fs) => sum + fs.steps.length, 0);
+  const session = useWallet ? sessionStats.record(playerId, {
+    betAmount: featureCost,
+    totalWin: cappedTotalWin,
+    freeSpinTriggered,
+    isBuyFeature: buyFeature
+  }) : undefined;
+
+  const result = {
+    spinId,
+    playerId,
+    seed: finalSeed,
+    rng: rng.snapshot(),
+    betAmount,
+    costAmount: featureCost,
+    buyFeature,
+    buyFeatureCostMultiplier: FREE_SPIN_RULES.buyFeatureCostMultiplier,
+    balanceBefore,
+    balanceAfter,
+    profit: cappedTotalWin - featureCost,
+    totalWin: cappedTotalWin,
+    rawTotalWin: totalWin,
+    wasCapped,
+    freeSpinTriggered,
+    base,
+    freeSpins,
+    session,
+    summary: {
+      cascades: allSteps,
+      freeSpinCount: freeSpins.length,
+      hit: cappedTotalWin > 0,
+      winMultiplier: Number((cappedTotalWin / betAmount).toFixed(2)),
+      costMultiplier: Number((featureCost / betAmount).toFixed(2)),
+      profitMultiplier: Number(((cappedTotalWin - featureCost) / betAmount).toFixed(2))
+    }
+  };
+
+  appendAudit({ createdAt: new Date().toISOString(), type: buyFeature ? 'buy-feature' : 'spin', result });
+  return result;
 }
 
-function cloneBoard(board) {
-  return board.map(row => [...row]);
-}
-
-function roundMoney(value) {
-  return Math.round(value * 100) / 100;
-}
-
-module.exports = new SpinEngine();
+module.exports = { spin, playOneBoard };

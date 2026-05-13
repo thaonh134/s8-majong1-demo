@@ -1,115 +1,222 @@
-let config = null;
-let lastResult = null;
-let activeStepIndex = 0;
-let sessionTotalBet = 0;
-let sessionTotalWin = 0;
-let sessionTotalLoss = 0;
+const symbolMap = {
+  A: '🀇', B: '🀈', C: '🀉', D: '🀊', E: '🀋', F: '🀌', G: '🀍', W: '🀄', S: '🀅'
+};
 
-const boardEl = document.getElementById('board');
-const timelineEl = document.getElementById('timeline');
-const spinBtn = document.getElementById('spinBtn');
-const betInput = document.getElementById('betAmount');
+const $ = id => document.getElementById(id);
+let currentResult = null;
+let currentFrames = [];
+let frameIndex = 0;
 
-async function init() {
-  const res = await fetch('/api/config');
-  config = await res.json();
-  renderBoard(emptyBoard(), []);
+function fmt(n) { return Number(n || 0).toLocaleString('vi-VN'); }
+function pct(n) { return `${(Number(n || 0) * 100).toFixed(2)}%`; }
+
+function uniqueWinKeys(wins = []) {
+  const set = new Set();
+  for (const win of wins) for (const cell of win.cells || []) set.add(`${cell.row},${cell.col}`);
+  return set;
 }
 
-function emptyBoard() {
-  return Array.from({ length: 4 }, () => Array.from({ length: 5 }, () => null));
-}
-
-spinBtn.addEventListener('click', async () => {
-  spinBtn.disabled = true;
-  spinBtn.textContent = 'SPINNING...';
-
-  try {
-    const res = await fetch('/api/spin', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ playerId: 'demo-player', betAmount: Number(betInput.value) })
-    });
-
-    lastResult = await res.json();
-    activeStepIndex = 0;
-    renderResult(lastResult);
-  } finally {
-    spinBtn.disabled = false;
-    spinBtn.textContent = 'SPIN';
+function renderBoard(board, highlightKeys = new Set()) {
+  const target = $('board');
+  target.innerHTML = '';
+  if (!board || !board.length) {
+    target.innerHTML = '<div class="emptyBoard">Không có board base vì đây là Buy Feature.</div>';
+    return;
   }
-});
+  board.forEach((row, r) => {
+    row.forEach((cell, c) => {
+      const div = document.createElement('div');
+      div.className = `tile tile-${cell || 'empty'} ${highlightKeys.has(`${r},${c}`) ? 'winCell' : ''}`;
+      div.textContent = cell ? symbolMap[cell] || cell : '';
+      target.appendChild(div);
+    });
+  });
+}
+
+function collectFrames(result) {
+  const frames = [];
+  if (result.base?.initialBoard?.length) {
+    frames.push({ title: 'Base initial board', board: result.base.initialBoard, wins: [], info: 'Board ban đầu trước khi check win.' });
+  }
+  for (const step of collectSteps(result)) {
+    frames.push({
+      title: `${step.mode === 'freeSpin' ? `Free Spin #${step.spinIndex}` : 'Base Spin'} - Cascade #${step.cascadeIndex + 1}`,
+      board: step.boardBefore,
+      wins: step.wins,
+      info: `Win ${fmt(step.stepWin)} | Multiplier x${step.multiplier} | ${step.wins.map(w => `${w.symbol}:${w.matchCount} cols/${w.ways} ways`).join(', ')}`
+    });
+    frames.push({
+      title: `Sau cascade #${step.cascadeIndex + 1}`,
+      board: step.boardAfter,
+      wins: [],
+      info: 'Board sau khi xoá ô thắng, rơi symbol và fill symbol mới.'
+    });
+  }
+  if (!frames.length && result.freeSpins?.[0]?.initialBoard?.length) {
+    frames.push({ title: 'Free Spin initial board', board: result.freeSpins[0].initialBoard, wins: [], info: 'Buy Feature bắt đầu từ free spin.' });
+  }
+  return frames;
+}
+
+function collectSteps(result) {
+  const steps = [...(result.base?.steps || [])];
+  for (const fs of result.freeSpins || []) steps.push(...(fs.steps || []));
+  return steps;
+}
+
+function renderFrame() {
+  const frame = currentFrames[frameIndex];
+  if (!frame) {
+    renderBoard(null);
+    $('boardCaption').textContent = 'Chưa có dữ liệu board.';
+    $('stepCounter').textContent = '0 / 0';
+    $('winInfo').textContent = 'Ô thắng sẽ được tô sáng sau khi có cascade.';
+    return;
+  }
+  renderBoard(frame.board, uniqueWinKeys(frame.wins));
+  $('boardCaption').textContent = frame.title;
+  $('stepCounter').textContent = `${frameIndex + 1} / ${currentFrames.length}`;
+  $('winInfo').textContent = frame.info;
+}
+
+function renderStats(result) {
+  $('balance').textContent = fmt(result.balanceAfter);
+  $('costAmount').textContent = fmt(result.costAmount);
+  $('costNote').textContent = result.buyFeature ? `Buy = ${result.buyFeatureCostMultiplier}x bet` : 'Cược thường';
+  $('totalWin').textContent = fmt(result.totalWin);
+  $('winMulti').textContent = `${result.summary.winMultiplier}x bet`;
+  $('profit').textContent = fmt(result.profit);
+  $('profit').className = result.profit >= 0 ? 'positive' : 'negative';
+
+  const s = result.session || {};
+  $('sessionRtp').textContent = pct(s.rtp);
+  $('sessionVolume').textContent = `${fmt(s.spins)} spins | Bet ${fmt(s.totalBet)} | Win ${fmt(s.totalWin)}`;
+  $('hitBonus').textContent = `${pct(s.hitRate)} / ${pct(s.bonusRate)}`;
+  $('buyCount').textContent = `Buy: ${fmt(s.buyFeatures)}`;
+}
+
+function renderSummary(result) {
+  $('summary').innerHTML = `
+    <div><span>Spin ID</span><b>${result.spinId}</b></div>
+    <div><span>Mode</span><b>${result.buyFeature ? 'Buy Feature' : 'Normal Spin'}</b></div>
+    <div><span>Seed</span><b>${result.seed}</b></div>
+    <div><span>Base Scatter</span><b>${result.base.scatterCount}</b></div>
+    <div><span>Free Spin</span><b>${result.freeSpinTriggered ? 'Có' : 'Không'} (${result.summary.freeSpinCount})</b></div>
+    <div><span>Cascades</span><b>${result.summary.cascades}</b></div>
+    <div><span>Hit</span><b>${result.summary.hit ? 'Có thắng' : 'Không thắng'}</b></div>
+    <div><span>Win Cap</span><b>${result.wasCapped ? 'Đã cap' : 'Không cap'}</b></div>
+  `;
+}
 
 function renderResult(result) {
-  document.getElementById('totalWin').textContent = formatMoney(result.totalWin);
-  document.getElementById('scatterCount').textContent = result.scatterCount;
-  document.getElementById('freeSpin').textContent = result.freeSpinTriggered ? 'Yes' : 'No';
-  document.getElementById('stepCount').textContent = result.steps.length;
-  document.getElementById('spinId').textContent = result.spinId;
-  document.getElementById('jsonResult').textContent = JSON.stringify(result, null, 2);
-
-  renderTimeline(result.steps);
-  renderStep(0);
-  updateSessionStats(result);
+  currentResult = result;
+  currentFrames = collectFrames(result);
+  frameIndex = 0;
+  renderStats(result);
+  renderSummary(result);
+  renderFrame();
+  $('debugJson').textContent = JSON.stringify(result, null, 2);
 }
 
-function updateSessionStats(result) {
-  const betAmount = Number(result.betAmount || 0);
-  const winAmount = Number(result.totalWin || 0);
-
-  sessionTotalBet += betAmount;
-  sessionTotalWin += winAmount;
-  sessionTotalLoss += Math.max(betAmount - winAmount, 0);
-  const rtnPercent = sessionTotalBet > 0 ? (sessionTotalWin / sessionTotalBet) * 100 : 0;
-
-  document.getElementById('sessionTotalWin').textContent = formatMoney(sessionTotalWin);
-  document.getElementById('sessionTotalLoss').textContent = formatMoney(sessionTotalLoss);
-  document.getElementById('sessionRtnPercent').textContent = `${rtnPercent.toFixed(2)}%`;
+async function postJson(url, body) {
+  const res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  const json = await res.json();
+  if (!res.ok) throw new Error(json.error || 'Request failed');
+  return json;
 }
 
-function renderTimeline(steps) {
-  timelineEl.innerHTML = '';
-  steps.forEach(step => {
-    const el = document.createElement('button');
-    el.className = 'step';
-    el.innerHTML = `
-      <b>Step ${step.index + 1} — x${step.multiplier}</b>
-      <span>Win: ${formatMoney(step.winAmount)} | Combos: ${step.wins.length}</span>
-    `;
-    el.addEventListener('click', () => renderStep(step.index));
-    timelineEl.appendChild(el);
-  });
+async function getJson(url) {
+  const res = await fetch(url);
+  const json = await res.json();
+  if (!res.ok) throw new Error(json.error || 'Request failed');
+  return json;
 }
 
-function renderStep(index) {
-  if (!lastResult) return;
-  activeStepIndex = index;
-  const step = lastResult.steps[index];
-  renderBoard(step.board, step.winCells || []);
-
-  [...timelineEl.children].forEach((child, i) => {
-    child.classList.toggle('active', i === index);
-  });
+function requestBody(extra = {}) {
+  return {
+    playerId: $('playerId').value || 'demo-player',
+    betAmount: Number($('betAmount').value || 1000),
+    seed: $('seed').value.trim() || undefined,
+    ...extra
+  };
 }
 
-function renderBoard(board, winCells) {
-  const winSet = new Set(winCells.map(c => `${c.row}:${c.col}`));
-  boardEl.innerHTML = '';
-
-  for (let r = 0; r < board.length; r++) {
-    for (let c = 0; c < board[r].length; c++) {
-      const code = board[r][c];
-      const symbol = code && config ? config.symbols[code] : null;
-      const cell = document.createElement('div');
-      cell.className = 'cell' + (winSet.has(`${r}:${c}`) ? ' win' : '');
-      cell.innerHTML = `<span>${symbol ? symbol.label : ''}</span><small>${code || ''}</small>`;
-      boardEl.appendChild(cell);
-    }
-  }
+async function refreshWalletAndStats() {
+  const playerId = $('playerId').value || 'demo-player';
+  const wallet = await getJson(`/api/wallet/${encodeURIComponent(playerId)}`);
+  const stats = await getJson(`/api/stats/${encodeURIComponent(playerId)}`);
+  $('balance').textContent = fmt(wallet.balance);
+  $('sessionRtp').textContent = pct(stats.rtp);
+  $('sessionVolume').textContent = `${fmt(stats.spins)} spins | Bet ${fmt(stats.totalBet)} | Win ${fmt(stats.totalWin)}`;
+  $('hitBonus').textContent = `${pct(stats.hitRate)} / ${pct(stats.bonusRate)}`;
+  $('buyCount').textContent = `Buy: ${fmt(stats.buyFeatures)}`;
 }
 
-function formatMoney(value) {
-  return Number(value || 0).toLocaleString('vi-VN');
+async function doSpin(buyFeature = false) {
+  const btn = buyFeature ? $('buyFeatureBtn') : $('spinBtn');
+  btn.disabled = true;
+  try {
+    const result = await postJson(buyFeature ? '/api/buy-feature' : '/api/spin', requestBody({ buyFeature }));
+    renderResult(result);
+    await loadLog();
+  } catch (err) { alert(err.message); }
+  finally { btn.disabled = false; }
 }
 
-init();
+async function loadLog() {
+  const log = await getJson('/api/audit/latest?limit=10');
+  $('logOutput').textContent = JSON.stringify(log.map(x => ({
+    createdAt: x.createdAt,
+    type: x.type,
+    spinId: x.result?.spinId,
+    cost: x.result?.costAmount,
+    win: x.result?.totalWin,
+    profit: x.result?.profit,
+    freeSpins: x.result?.summary?.freeSpinCount,
+    rtp: x.result?.session?.rtp
+  })), null, 2);
+}
+
+async function loadConfig() {
+  const cfg = await getJson('/api/config');
+  $('configOutput').textContent = JSON.stringify(cfg, null, 2);
+}
+
+$('spinBtn').addEventListener('click', () => doSpin(false));
+$('buyFeatureBtn').addEventListener('click', () => doSpin(true));
+$('resetBtn').addEventListener('click', async () => {
+  await postJson('/api/wallet/reset', { playerId: $('playerId').value || 'demo-player', balance: 1000000 });
+  currentResult = null; currentFrames = []; frameIndex = 0;
+  renderFrame();
+  $('totalWin').textContent = '0'; $('costAmount').textContent = '0'; $('profit').textContent = '0'; $('winMulti').textContent = '0x bet';
+  $('summary').textContent = 'Chưa có spin.'; $('debugJson').textContent = 'Chưa có API response.';
+  await refreshWalletAndStats(); await loadLog();
+});
+$('prevStep').addEventListener('click', () => { if (currentFrames.length) { frameIndex = Math.max(0, frameIndex - 1); renderFrame(); } });
+$('nextStep').addEventListener('click', () => { if (currentFrames.length) { frameIndex = Math.min(currentFrames.length - 1, frameIndex + 1); renderFrame(); } });
+$('loadLogBtn').addEventListener('click', loadLog);
+$('loadConfigBtn').addEventListener('click', loadConfig);
+$('simulateBtn').addEventListener('click', async () => {
+  $('simulateBtn').disabled = true;
+  $('simulationResult').textContent = 'Đang chạy...';
+  try {
+    const result = await postJson('/api/simulate', {
+      rounds: Number($('rounds').value || 10000),
+      betAmount: Number($('betAmount').value || 1000),
+      seedPrefix: `ui-${Date.now()}`
+    });
+    $('simulationResult').textContent = JSON.stringify(result, null, 2);
+  } catch (err) { $('simulationResult').textContent = err.message; }
+  finally { $('simulateBtn').disabled = false; }
+});
+
+document.querySelectorAll('.tab').forEach(btn => btn.addEventListener('click', () => {
+  document.querySelectorAll('.tab').forEach(b => b.classList.remove('active'));
+  document.querySelectorAll('.tabContent').forEach(c => c.classList.remove('active'));
+  btn.classList.add('active');
+  $(btn.dataset.tab).classList.add('active');
+}));
+
+refreshWalletAndStats();
+loadConfig();
+loadLog().catch(() => {});

@@ -1,39 +1,31 @@
-class CascadeEngine {
-  constructor(boardGenerator) {
-    this.boardGenerator = boardGenerator;
-  }
+const { fillEmptyCells, cloneBoard } = require('./boardGenerator');
 
-  apply(board, winCells) {
-    const rows = board.length;
-    const cols = board[0].length;
-    const removeSet = new Set(winCells.map(c => `${c.row}:${c.col}`));
-    const next = Array.from({ length: rows }, () => Array(cols).fill(null));
-    const newCells = [];
-
-    for (let c = 0; c < cols; c++) {
-      const remaining = [];
-
-      for (let r = rows - 1; r >= 0; r--) {
-        if (!removeSet.has(`${r}:${c}`)) {
-          remaining.push(board[r][c]);
-        }
-      }
-
-      let writeRow = rows - 1;
-      for (const symbol of remaining) {
-        next[writeRow][c] = symbol;
-        writeRow--;
-      }
-
-      while (writeRow >= 0) {
-        next[writeRow][c] = this.boardGenerator.pickSymbolCode();
-        newCells.push({ row: writeRow, col: c });
-        writeRow--;
-      }
+function uniqueWinCells(wins) {
+  const set = new Set();
+  for (const win of wins) {
+    for (const cell of win.cells) {
+      set.add(`${cell.row},${cell.col}`);
     }
-
-    return { board: next, newCells };
   }
+  return set;
 }
 
-module.exports = CascadeEngine;
+function removeWinningCells(board, wins) {
+  const out = cloneBoard(board);
+  const cells = uniqueWinCells(wins);
+
+  for (const key of cells) {
+    const [row, col] = key.split(',').map(Number);
+    out[row][col] = null;
+  }
+
+  return out;
+}
+
+function cascade(board, wins, rng, mode = 'base') {
+  const removedBoard = removeWinningCells(board, wins);
+  const nextBoard = fillEmptyCells(removedBoard, rng, mode);
+  return { removedBoard, nextBoard };
+}
+
+module.exports = { cascade, removeWinningCells, uniqueWinCells };
